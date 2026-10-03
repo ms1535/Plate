@@ -228,9 +228,11 @@ function foodUnits(food){
 function itemTotals(it){ const u = (it.units || [])[it.unit || 0] || {kcal:0,p:0,c:0,f:0}; const q = n0(it.qty); return {kcal:u.kcal*q, p:u.p*q, c:u.c*q, f:u.f*q}; }
 function sum(items){ return items.reduce((a, it) => { const t = itemTotals(it); return {kcal:a.kcal+t.kcal, p:a.p+t.p, c:a.c+t.c, f:a.f+t.f}; }, {kcal:0,p:0,c:0,f:0}); }
 function mealToFood(m){
-  const t = sum(m.items || []); const n = Math.max(1, n0(m.servings) || 1);
-  return {id:m.id, by:m.by || '', isMeal:true, name:m.name || 'Saved meal', brand:n > 1 ? `Recipe · makes ${n}` : 'Saved meal', src:'Saved meal',
-    units:[mk(n > 1 ? 'serving' : 'meal', t.kcal, t.p, t.c, t.f, 1/n)]};
+  const t = sum(m.items || []); const n = Math.max(1, n0(m.servings) || 1), cg = n0(m.cookedG);
+  const units = [mk(n > 1 ? 'serving' : 'meal', t.kcal, t.p, t.c, t.f, 1/n)];
+  if (cg > 0) units.push(...gramUnits({kcal:t.kcal * 100 / cg, p:t.p * 100 / cg, c:t.c * 100 / cg, f:t.f * 100 / cg}));
+  const brand = (n > 1 ? `Recipe · makes ${n}` : 'Saved meal') + (cg > 0 ? ` · batch ${r0(cg).toLocaleString()} g` : '');
+  return {id:m.id, by:m.by || '', isMeal:true, name:m.name || 'Saved meal', brand, src:'Saved meal', units};
 }
 function niceLabel(l){
   l = String(l || '');
@@ -263,7 +265,8 @@ function calcTarget(p, weights){
 }
 function macroSplit(p){
   const m = p.macros || {};
-  const s = {p:n0(m.p) || 30, c:n0(m.c) || 40, f:n0(m.f) || 30};
+  const v = (x, d) => x !== undefined && x !== null && x !== '' && isFinite(+x) ? +x : d;
+  const s = {p:v(m.p, 30), c:v(m.c, 40), f:v(m.f, 30)};
   return Math.round(s.p + s.c + s.f) === 100 ? s : {p:30, c:40, f:30};
 }
 function movingAvg(ws){
@@ -284,8 +287,9 @@ function localBackend(){
     async signIn(){}, async signUp(){}, async signOut(){ toast('Demo mode has no account.'); }, async resetPw(){},
     watchProfile(cb){ return sub(() => cb(structuredClone(db.profile), false)); },
     setProfile(p){ db.profile = {...db.profile, ...clean(p)}; save(); },
-    watchDay(date, cb){ return sub(() => cb(structuredClone(db.days[date] || []))); },
-    setDay(date, entries){ db.days[date] = clean(entries); save(); },
+    watchDay(date, cb){ return sub(() => cb(structuredClone(db.days[date] || []), (db.goals || {})[date] || null)); },
+    setDay(date, entries, goal){ db.days[date] = clean(entries); if (goal){ db.goals = db.goals || {}; db.goals[date] = goal; } save(); },
+    async exportAll(){ return {days:Object.entries(db.days).map(([date, e]) => ({date, entries:e})), weights:Object.entries(db.weights).map(([date, lb]) => ({date, lb}))}; },
     watchWeights(cb){ return sub(() => cb(Object.entries(db.weights).map(([date, lb]) => ({date, lb})).sort((a, b) => a.date < b.date ? -1 : 1))); },
     setWeight(date, lb){ db.weights[date] = lb; save(); },
     delWeight(date){ delete db.weights[date]; save(); },
@@ -324,8 +328,12 @@ async function firebaseBackend(){
     resetPw:e => A.sendPasswordResetEmail(auth, e),
     watchProfile(cb){ return F.onSnapshot(uref(), s => cb(s.data() || {}, s.metadata.fromCache), err); },
     setProfile(p){ F.setDoc(uref(), clean(p), {merge:true}).catch(err); },
-    watchDay(date, cb){ return F.onSnapshot(F.doc(db, 'users', me.uid, 'days', date), s => cb((s.data() || {}).entries || []), err); },
-    setDay(date, entries){ F.setDoc(F.doc(db, 'users', me.uid, 'days', date), {entries:clean(entries)}).catch(err); },
+    watchDay(date, cb){ return F.onSnapshot(F.doc(db, 'users', me.uid, 'days', date), s => { const d = s.data() || {}; cb(d.entries || [], d.goal || null); }, err); },
+    setDay(date, entries, goal){ F.setDoc(F.doc(db, 'users', me.uid, 'days', date), goal ? {entries:clean(entries), goal} : {entries:clean(entries)}).catch(err); },
+    async exportAll(){
+      const [ds, ws] = await Promise.all([F.getDocs(F.collection(db, 'users', me.uid, 'days')), F.getDocs(F.collection(db, 'users', me.uid, 'weights'))]);
+      return {days:ds.docs.map(d => ({date:d.id, entries:d.data().entries || []})), weights:ws.docs.map(d => ({date:d.id, lb:d.data().lb}))};
+    },
     watchWeights(cb){ return F.onSnapshot(F.collection(db, 'users', me.uid, 'weights'), qs => cb(qs.docs.map(d => ({date:d.id, lb:d.data().lb})).sort((a, b) => a.date < b.date ? -1 : 1)), err); },
     setWeight(date, lb){ F.setDoc(F.doc(db, 'users', me.uid, 'weights', date), {lb}).catch(err); },
     delWeight(date){ F.deleteDoc(F.doc(db, 'users', me.uid, 'weights', date)).catch(err); },
@@ -392,7 +400,8 @@ function startData(){
 function watchDate(){
   S.unsub.day && S.unsub.day(); S.unsub.prev && S.unsub.prev();
   S.entries = []; S.prevEntries = [];
-  S.unsub.day = be().watchDay(S.date, e => { S.entries = e; render(); });
+  S.dayGoal = null;
+  S.unsub.day = be().watchDay(S.date, (e, g) => { S.entries = e; S.dayGoal = g; render(); });
   S.unsub.prev = be().watchDay(addDays(S.date, -1), e => { S.prevEntries = e; render(); });
 }
 
@@ -423,7 +432,7 @@ function macroBar(label, val, target, color){
 function viewToday(){
   const t = calcTarget(S.profile, S.weights);
   const tot = sum(S.entries);
-  const target = t.target;
+  const target = dayTarget();
   const offline = navigator.onLine ? '' : '<span class="pill">Offline</span>';
   let summary;
   if (target){
@@ -435,6 +444,7 @@ function viewToday(){
       <div class="bar" style="margin-top:10px"><i style="width:${Math.min(100, tot.kcal / target * 100)}%;background:${over ? 'var(--warn)' : 'var(--acc)'}"></i></div>
       <div class="eq"><div>Goal<b>${r0(target).toLocaleString()}</b></div><div class="right">Eaten<b>${r0(tot.kcal).toLocaleString()}</b></div></div>
       <div class="macros">${macroBar('Protein', tot.p, target*ms.p/400, 'var(--p)')}${macroBar('Carbs', tot.c, target*ms.c/400, 'var(--c)')}${macroBar('Fat', tot.f, target*ms.f/900, 'var(--f)')}</div>
+      <button class="btn plain" data-act="tab" data-tab="weight" style="padding:10px 0 0;font-size:14px">Weekly averages and trend ›</button>
     </div>`;
   } else {
     const p = S.profile, profileDone = p.sex && p.birthYear && p.heightIn;
@@ -453,7 +463,7 @@ function viewToday(){
     const copy = !es.length && pv.length ? `<button class="copyrow" data-act="copy-prev" data-meal="${m}">Same as yesterday? <b>Copy ${pv.length} item${pv.length > 1 ? 's' : ''} · ${r0(sum(pv).kcal)} kcal</b></button>` : '';
     return `<div class="card"><div class="mealhead"><h2>${m}</h2><span class="muted">${r0(mt.kcal)} kcal</span></div>
       ${es.map(e => `<button class="item" data-act="edit-entry" data-id="${esc(e.id)}"><div><div class="nm">${esc(e.name)}</div><div class="sub">${esc([e.brand, fmtQtyUnit(e)].filter(Boolean).join(' · '))}</div></div><div class="kc">${r0(itemTotals(e).kcal)}</div></button>`).join('')}
-      ${copy}<div class="row" style="justify-content:space-between"><button class="addrow" style="width:auto" data-act="add" data-meal="${m}">+ Add food</button><button class="addrow" style="width:auto;color:var(--muted);font-weight:500" data-act="copy-from" data-meal="${m}">Copy a past meal</button></div></div>`;
+      ${copy}<div class="row" style="justify-content:space-between"><button class="addrow" style="width:auto" data-act="add" data-meal="${m}">+ Add food</button><button class="addrow" style="width:auto;color:var(--muted);font-weight:500" data-act="copy-from" data-meal="${m}">Copy meal</button></div></div>`;
   }).join('');
   const copyDay = !S.entries.length && prev.length ? `<button class="btn ghost block" data-act="copy-prev" data-meal="" style="margin:-2px 0 12px">Copy all of ${dayLabel(addDays(S.date, -1)).toLowerCase()} (${prev.length} items · ${r0(sum(prev).kcal)} kcal)</button>` : '';
   const longDate = parseYmd(S.date).toLocaleDateString(undefined, {weekday:'long', month:'long', day:'numeric'});
@@ -510,7 +520,7 @@ function trendAt(date){
 }
 function weekCard(){
   const {start, end} = weekRange();
-  const title = `<div class="mealhead"><h2>Past 7 days</h2><span class="muted small">${fmtShort(start)} – ${fmtShort(end)}</span></div><div class="small muted">Full days only. Today joins tomorrow.</div>`;
+  const title = `<div class="mealhead"><h2>Past 7 days</h2><span class="muted small">${fmtShort(start)} – ${fmtShort(end)}</span></div><div class="small muted">Previous 7 days, not including today. Averages count any day with at least one entry.</div>`;
   if (!S.week || S.week.key !== start){ loadWeek(); return `<div class="card">${title}<p class="empty">Loading…</p></div>`; }
   const logged = S.week.days.filter(d => d.e.length);
   const n = logged.length;
@@ -549,13 +559,17 @@ function viewWeight(){
   return `<h1>Weight</h1>
     <form class="card" data-form="weight"><div class="row"><div class="grow"><label>Weight (lb)</label><input name="lb" type="number" inputmode="decimal" step="0.1" placeholder="${todays ? todays.lb : (last ? last.lb : '')}" required></div><div class="grow"><label>Date</label><input name="date" type="date" value="${today()}" max="${today()}"></div></div><button class="btn block">Save weigh-in</button></form>
     ${weekCard()}
-    <div class="stats">
+    <div class="stats">${ws.length < 2 ? `
+      <div><span>Latest</span><b>${r1(last.lb)}</b><span>${fmtShort(last.date)}</span></div>
+      <div><span>To goal</span><b>${goal ? r1(Math.abs(last.lb - goal)) : '–'}</b><span>${goal ? 'goal ' + goal + ' lb' : 'set in Profile'}</span></div>
+    </div>
+    <p class="small muted" style="margin:-4px 0 12px">Averages, 30-day change, and the chart appear after your second weigh-in.</p>` : `
       <div><span>Latest</span><b>${last ? r1(last.lb) : '–'}</b><span>${last ? fmtShort(last.date) : 'no entries'}</span></div>
       <div><span>7-day average</span><b>${avg ? r1(avg) : '–'}</b><span>lb</span></div>
       <div><span>Last 30 days</span><b>${change != null ? sign(change) : '–'}</b><span>lb (avg)</span></div>
       <div><span>To goal</span><b>${goal && avg ? r1(Math.abs(avg - goal)) : '–'}</b><span>${goal ? 'goal ' + goal + ' lb' : 'set in Profile'}</span></div>
     </div>
-    <div class="card"><div class="seg" style="margin-top:0">${[[30,'30 days'],[90,'90 days'],[365,'1 year'],['all','All']].map(([v, l]) => `<button data-act="wrange" data-v="${v}" class="${String(S.wRange) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>${chartSVG()}</div>
+    <div class="card"><div class="seg" style="margin-top:0">${[[30,'30 days'],[90,'90 days'],[365,'1 year'],['all','All']].map(([v, l]) => `<button data-act="wrange" data-v="${v}" class="${String(S.wRange) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>${chartSVG()}</div>`}
     <div class="card"><h2>History</h2><div class="list">${ws.length ? ws.slice().reverse().slice(0, 60).map(w => `<div class="item"><div>${esc(dayLabel(w.date))}</div><div class="row"><b>${r1(w.lb)} lb</b><button class="btn danger" data-act="del-weight" data-date="${w.date}" aria-label="Delete">✕</button></div></div>`).join('') : '<p class="empty">No weigh-ins yet.</p>'}</div></div>`;
 }
 
@@ -627,6 +641,7 @@ function viewSettings(){
       <div class="code">${esc(S.hid || '…')}</div><button class="btn ghost block" data-act="share-code">Share code</button>
       <form data-form="join"><label>Join someone else's household</label><div class="row"><input class="grow" name="code" placeholder="8-character code" autocapitalize="characters" autocomplete="off"><button class="btn">Join</button></div></form></div>`}
     ${standalone() ? '' : `<details class="card"><summary>Install on your phone</summary><p class="small"><b>iPhone:</b> open in Safari, tap Share, then Add to Home Screen.<br><b>Android:</b> open in Chrome, tap the ⋮ menu, then Install app.</p></details>`}
+    <div class="card"><h2>Your data</h2><p class="small muted">Download your food log and weigh-ins as spreadsheet (CSV) files, for a backup or to review elsewhere.</p><button class="btn ghost block" data-act="export">Export CSV</button></div>
     <div class="card"><h2>Account</h2><p class="small muted">${esc(S.user.email || '')}</p>${DEMO ? '' : '<button class="btn ghost block" data-act="signout">Sign out</button>'}</div>
     <p class="small muted center">Food data: USDA FoodData Central and Open Food Facts.</p>`;
 }
@@ -815,9 +830,11 @@ function renderBuilder(){
   return `${head(M.id ? 'Edit meal' : 'New meal / recipe')}
     <div class="card"><label>Name</label><input data-in="m-name" value="${esc(M.name)}" placeholder="Chicken stir fry">
       <label>Number of servings it makes</label><input data-in="m-serv" type="number" inputmode="numeric" min="1" value="${M.servings}">
-      <p class="small muted">Use 1 for a meal you eat the same way each time. For a recipe, enter how many portions the whole batch makes.</p></div>
+      <p class="small muted">Use 1 for a meal you eat the same way each time. For a recipe, enter how many portions the whole batch makes.</p>
+      <label>Cooked weight of the whole batch, in grams (optional)</label><input data-in="m-cooked" type="number" inputmode="decimal" value="${M.cookedG || ''}" placeholder="e.g. 1450">
+      <p class="small muted">Weigh the finished pot or pan (minus the container). Then each of you can log the grams you actually ate.</p></div>
     <div class="card"><div class="mealhead"><h2>Ingredients</h2><span class="muted">${r0(t.kcal)} kcal total</span></div>
-      ${M.items.map((it, i) => `<div class="item"><div><div class="nm">${esc(it.name)}</div><div class="sub">${esc(fmtQtyUnit(it))}</div></div><div class="row"><span class="kc">${r0(itemTotals(it).kcal)}</span><button class="btn danger" data-act="m-rm" data-i="${i}" aria-label="Remove">✕</button></div></div>`).join('') || '<p class="empty">No ingredients yet.</p>'}
+      ${M.items.map((it, i) => `<div class="item"><button data-act="m-edit" data-i="${i}" style="flex:1;min-width:0;border:0;background:none;text-align:left;padding:0"><div class="nm">${esc(it.name)}</div><div class="sub">${esc(fmtQtyUnit(it))} · tap to change</div></button><div class="row"><span class="kc">${r0(itemTotals(it).kcal)}</span><button class="btn danger" data-act="m-rm" data-i="${i}" aria-label="Remove">✕</button></div></div>`).join('') || '<p class="empty">No ingredients yet.</p>'}
       <button class="addrow" data-act="m-add">+ Add ingredient</button></div>
     <div class="card small" id="mper">Per serving: <b>${r0(t.kcal / n)} kcal</b> · P ${r1(t.p / n)} g · C ${r1(t.c / n)} g · F ${r1(t.f / n)} g</div>
     <button class="btn block" data-act="m-save">Save</button>
@@ -889,6 +906,14 @@ async function handleCode(code){
   if (error === 'network'){ openSheet(() => `${head('Lookup failed', '‹ Back', 'back-add')}<div class="card"><p>Couldn't reach the food databases to look up barcode <b>${esc(code)}</b>.</p><p class="small muted">Check your signal and try scanning again.</p><button class="btn block" data-act="scan">Scan again</button></div>`); return; }
   openSheet(() => `${head('Not found', '‹ Back', 'back-add')}<div class="card"><p>Barcode <b>${esc(code)}</b> isn't in the database yet.</p><p class="small muted">Check that this number matches the one printed under the barcode. If it does, create the food once from the nutrition label. After that, scanning it finds it for both of you.</p><button class="btn block" data-act="new-food" data-code="${esc(code)}">Create this food</button></div>`);
 }
+// Saves a day's entries along with the goal that applies to it, so past days keep
+// the goal they were logged against even if the profile changes later.
+function saveDay(date, entries){
+  const cur = calcTarget(S.profile, S.weights).target;
+  const goal = date === today() ? cur : ((date === S.date && S.dayGoal) || cur);
+  be().setDay(date, entries, goal || null);
+}
+const dayTarget = () => S.date === today() ? calcTarget(S.profile, S.weights).target : (S.dayGoal || calcTarget(S.profile, S.weights).target);
 const loadDay = date => new Promise(res => { let u = null, done = false; u = be().watchDay(date, e => { if (done) return; done = true; res(e); setTimeout(() => u && u(), 0); }); });
 async function openCopyFrom(meal){
   const target = S.date;
@@ -937,8 +962,8 @@ const ACT = {
     const f = P.food;
     const item = {name:f.name, brand:f.brand || '', src:f.src || '', code:f.code || '', units:f.units, unit:P.unit, qty};
     if (P.mode === 'pick'){ A.onPick(item); return; }
-    if (P.mode === 'edit'){ be().setDay(S.date, S.entries.map(e => e.id === P.entryId ? {...e, unit:P.unit, qty, meal:P.meal} : e)); closeSheet(); return; }
-    be().setDay(S.date, [...S.entries, {id:uid(), meal:P.meal, ...item}]);
+    if (P.mode === 'edit'){ saveDay(S.date, S.entries.map(e => e.id === P.entryId ? {...e, unit:P.unit, qty, meal:P.meal} : e)); closeSheet(); return; }
+    saveDay(S.date, [...S.entries, {id:uid(), meal:P.meal, ...item}]);
     pushRecent(item);
     if (P.saveLib && S.hid) be().saveFood(S.hid, libFoodFromApi(f));
     toast(`Added to ${P.meal}`);
@@ -946,33 +971,33 @@ const ACT = {
   },
   'portion-del'(){
     const date = S.date, idx = S.entries.findIndex(e => e.id === P.entryId), gone = S.entries[idx];
-    be().setDay(date, S.entries.filter(e => e.id !== P.entryId)); closeSheet();
-    toast(`Deleted ${gone ? gone.name : 'entry'}`, () => { if (S.date !== date) return; const list = S.entries.slice(); list.splice(Math.min(idx, list.length), 0, gone); be().setDay(date, list); });
+    saveDay(date, S.entries.filter(e => e.id !== P.entryId)); closeSheet();
+    toast(`Deleted ${gone ? gone.name : 'entry'}`, () => { if (S.date !== date) return; const list = S.entries.slice(); list.splice(Math.min(idx, list.length), 0, gone); saveDay(date, list); });
   },
   fav(){ toggleFav(); },
   'copy-from'(el){ openCopyFrom(el.dataset.meal); },
   'copy-group'(el){
     const g = S.copyGroups[+el.dataset.i], {meal, date} = S.copyTarget; if (!g || S.date !== date) return;
-    const before = S.entries.slice();
-    const items = g.items.map(e => ({...e, id:uid(), meal}));
-    be().setDay(date, [...S.entries, ...items]); closeSheet();
-    toast(`Copied ${items.length} item${items.length > 1 ? 's' : ''} to ${meal}`, () => { if (S.date === date) be().setDay(date, before); });
+    const items = g.items.map(e => ({...e, id:uid(), meal})), ids = new Set(items.map(e => e.id));
+    saveDay(date, [...S.entries, ...items]); closeSheet();
+    toast(`Copied ${items.length} item${items.length > 1 ? 's' : ''} to ${meal}`, () => { if (S.date === date) saveDay(date, S.entries.filter(e => !ids.has(e.id))); });
   },
   'quick-log'(el){
     const f = A.shown[+el.dataset.i]; if (!f) return;
     const item = {name:f.name, brand:f.brand || '', src:f.src || '', code:f.code || '', units:f.units, unit:f.unit || 0, qty:f.qty || 1};
     const date = S.date, id = uid();
-    be().setDay(date, [...S.entries, {id, meal:A.meal, ...item}]);
+    saveDay(date, [...S.entries, {id, meal:A.meal, ...item}]);
     pushRecent(item);
-    toast(`Added ${f.name} to ${A.meal}`, () => { if (S.date === date) be().setDay(date, S.entries.filter(e => e.id !== id)); });
+    toast(`Added ${f.name} to ${A.meal}`, () => { if (S.date === date) saveDay(date, S.entries.filter(e => e.id !== id)); });
     closeSheet();
   },
   'copy-prev'(el){
-    const meal = el.dataset.meal, date = S.date, before = S.entries.slice();
+    const meal = el.dataset.meal, date = S.date;
     const items = (S.prevEntries || []).filter(e => !meal || e.meal === meal).map(e => ({...e, id:uid()}));
     if (!items.length) return;
-    be().setDay(date, [...S.entries, ...items]);
-    toast(`Copied ${items.length} item${items.length > 1 ? 's' : ''}`, () => { if (S.date === date) be().setDay(date, before); });
+    const ids = new Set(items.map(e => e.id));
+    saveDay(date, [...S.entries, ...items]);
+    toast(`Copied ${items.length} item${items.length > 1 ? 's' : ''}`, () => { if (S.date === date) saveDay(date, S.entries.filter(e => !ids.has(e.id))); });
   },
   'edit-entry'(el){
     const e = S.entries.find(x => x.id === el.dataset.id); if (!e) return;
@@ -998,6 +1023,11 @@ const ACT = {
     openAdd({mode:'pick', title:'Add ingredient', onPick:item => { M = saved; M.items.push(item); openSheet(renderBuilder); }});
     A.backTo = () => { M = saved; openSheet(renderBuilder); };
   },
+  'm-edit'(el){
+    const i = +el.dataset.i, it = M.items[i], saved = M; if (!it) return;
+    A = {mode:'pick', onPick:item => { M = saved; M.items[i] = item; openSheet(renderBuilder); }};
+    openPortion({food:{name:it.name, brand:it.brand || '', src:it.src || '', units:it.units}, unit:it.unit, qty:it.qty, mode:'pick', back:() => { M = saved; openSheet(renderBuilder); }});
+  },
   'm-rm'(el){ M.items.splice(+el.dataset.i, 1); renderSheet(); },
   'm-save'(){
     if (!M.name.trim()){ toast('Give it a name.'); return; }
@@ -1009,6 +1039,26 @@ const ACT = {
   async 'share-code'(){
     const text = `Join my Plate household with code ${S.hid}: ${location.href.split('#')[0]}`;
     try { if (navigator.share) await navigator.share({text}); else { await navigator.clipboard.writeText(S.hid); toast('Code copied'); } } catch {}
+  },
+  async export(){
+    toast('Preparing export…');
+    try {
+      const {days, weights} = await be().exportAll();
+      const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+      const rows = [['date','meal','food','brand','amount','unit','calories','protein_g','carbs_g','fat_g']];
+      days.sort((a, b) => a.date < b.date ? -1 : 1).forEach(d => {
+        const order = e => MEALS.indexOf(e.meal);
+        d.entries.slice().sort((a, b) => order(a) - order(b)).forEach(e => { const t = itemTotals(e), u = (e.units || [])[e.unit || 0] || {};
+          rows.push([d.date, e.meal, e.name, e.brand || '', r1(e.qty), niceLabel(u.label), r0(t.kcal), r1(t.p), r1(t.c), r1(t.f)]); });
+      });
+      const wrows = [['date','weight_lb'], ...weights.sort((a, b) => a.date < b.date ? -1 : 1).map(w => [w.date, w.lb])];
+      const csv = r => r.map(x => x.map(q).join(',')).join('\n');
+      const stamp = today();
+      const files = [new File([csv(rows)], `plate-food-log-${stamp}.csv`, {type:'text/csv'}), new File([csv(wrows)], `plate-weights-${stamp}.csv`, {type:'text/csv'})];
+      if (navigator.canShare && navigator.canShare({files})){ await navigator.share({files, title:'Plate export'}); return; }
+      for (const f of files){ const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove(); await new Promise(r => setTimeout(r, 400)); }
+      toast(`Exported ${rows.length - 1} food entries and ${wrows.length - 1} weigh-ins`);
+    } catch(e){ if (e.name !== 'AbortError') toast('Export failed: ' + (e.message || e)); }
   },
   signout(){ if (confirm('Sign out on this device?')) be().signOut(); },
   async 'reset-pw'(){
@@ -1070,7 +1120,7 @@ const FORMS = {
     const kcal = n0(form.kcal.value); if (!(kcal > 0)){ toast('Enter calories.'); return; }
     const meal = form.meal.value;
     const units = [mk('entry', kcal, n0(form.p.value), n0(form.c.value), n0(form.f.value))];
-    be().setDay(S.date, [...S.entries, {id:uid(), meal, name:form.name.value.trim() || 'Quick add', brand:'', src:'Quick add', units, unit:0, qty:1}]);
+    saveDay(S.date, [...S.entries, {id:uid(), meal, name:form.name.value.trim() || 'Quick add', brand:'', src:'Quick add', units, unit:0, qty:1}]);
     toast(`Added to ${meal}`); closeSheet();
   },
   food(form){
@@ -1103,6 +1153,7 @@ document.addEventListener('input', e => {
   else if (k === 'meal'){ P.meal = t.value; }
   else if (k === 'savelib'){ P.saveLib = t.checked; }
   else if (k === 'm-name'){ M.name = t.value; }
+  else if (k === 'm-cooked'){ M.cookedG = n0(t.value) || null; }
   else if (k === 'm-serv'){ M.servings = t.value; const n = Math.max(1, n0(t.value) || 1), tt = sum(M.items); $('#mper').innerHTML = `Per serving: <b>${r0(tt.kcal / n)} kcal</b> · P ${r1(tt.p / n)} g · C ${r1(tt.c / n)} g · F ${r1(tt.f / n)} g`; }
   else if (k === 'pickdate'){ if (t.value){ S.date = t.value; watchDate(); render(true); } }
   else if (k === 'foodq'){ S.foodQ = t.value; S.foodsShown = libList(S.foodQ); $('#foodlist').innerHTML = foodListHTML(S.foodsShown); }
