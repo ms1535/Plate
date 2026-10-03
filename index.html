@@ -399,10 +399,15 @@ function startData(){
 }
 function watchDate(){
   S.unsub.day && S.unsub.day(); S.unsub.prev && S.unsub.prev();
-  S.entries = []; S.prevEntries = [];
-  S.dayGoal = null;
-  S.unsub.day = be().watchDay(S.date, (e, g) => { S.entries = e; S.dayGoal = g; render(); });
-  S.unsub.prev = be().watchDay(addDays(S.date, -1), e => { S.prevEntries = e; render(); });
+  // Show the last known entries for a day right away (no false "0 eaten" flash);
+  // a day never seen this session shows a loading state until its data arrives.
+  const C = S.dayCache = S.dayCache || {};
+  const date = S.date, prevDate = addDays(date, -1);
+  const hit = C[date];
+  S.entries = hit ? hit.e : []; S.dayGoal = hit ? hit.g : null; S.dayLoaded = !!hit;
+  S.prevEntries = C[prevDate] ? C[prevDate].e : [];
+  S.unsub.day = be().watchDay(date, (e, g) => { C[date] = {e, g}; if (S.date !== date) return; S.entries = e; S.dayGoal = g; S.dayLoaded = true; render(); });
+  S.unsub.prev = be().watchDay(prevDate, (e, g) => { C[prevDate] = {e, g}; if (S.date !== date) return; S.prevEntries = e; render(); });
 }
 
 /* ================= Rendering ================= */
@@ -433,6 +438,10 @@ function viewToday(){
   const t = calcTarget(S.profile, S.weights);
   const tot = sum(S.entries);
   const target = dayTarget();
+  if (!S.dayLoaded){
+    const longDate = parseYmd(S.date).toLocaleDateString(undefined, {weekday:'long', month:'long', day:'numeric'});
+    return `<div class="datebar"><button data-act="day" data-d="-1" aria-label="Previous day">‹</button><div class="lbl center">${esc(dayLabel(S.date))}<span class="small muted" style="display:block;font-weight:400">${esc(longDate)}</span></div><button data-act="day" data-d="1" aria-label="Next day">›</button></div><div class="card"><p class="empty center">Loading…</p></div>`;
+  }
   const offline = navigator.onLine ? '' : '<span class="pill">Offline</span>';
   let summary;
   if (target){
