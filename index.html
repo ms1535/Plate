@@ -220,7 +220,13 @@ function mealToFood(m){
   return {id:m.id, isMeal:true, name:m.name || 'Saved meal', brand:n > 1 ? `Recipe · makes ${n}` : 'Saved meal', src:'Saved meal',
     units:[mk(n > 1 ? 'serving' : 'meal', t.kcal, t.p, t.c, t.f, 1/n)]};
 }
-const unitLine = (u, q=1) => q == 1 && u.label !== 'g' && u.label !== 'oz' ? u.label : /^[\d.½¼¾⅓]/.test(u.label) ? `${r1(q)} × ${u.label}` : `${r1(q)} ${u.label}`;
+function niceLabel(l){
+  l = String(l || '');
+  let m = l.match(/^serving \((.+)\)$/); if (m) l = servingLabel(m[1]);
+  m = l.match(/^(.*\S)\s*\((\d[\d.,]*\s*(?:g|ml))\)$/); if (m) l = `${m[1]} · ${m[2]}`;
+  return l;
+}
+const unitLine = (u, q=1) => { const l = niceLabel(u.label); return q == 1 && l !== 'g' && l !== 'oz' ? l : /^[\d.½¼¾⅓]/.test(l) ? `${r1(q)} × ${l}` : `${r1(q)} ${l}`; };
 const defQty = u => u && (u.label === 'g' || u.label === 'ml') ? 100 : 1;
 const fmtQtyUnit = it => { const u = (it.units || [])[it.unit || 0]; return u ? unitLine(u, it.qty) : ''; };
 
@@ -425,7 +431,7 @@ function viewToday(){
     const copy = !es.length && pv.length ? `<button class="copyrow" data-act="copy-prev" data-meal="${m}">Same as yesterday? <b>Copy ${pv.length} item${pv.length > 1 ? 's' : ''} · ${r0(sum(pv).kcal)} kcal</b></button>` : '';
     return `<div class="card"><div class="mealhead"><h2>${m}</h2><span class="muted">${r0(mt.kcal)} kcal</span></div>
       ${es.map(e => `<button class="item" data-act="edit-entry" data-id="${esc(e.id)}"><div><div class="nm">${esc(e.name)}</div><div class="sub">${esc([e.brand, fmtQtyUnit(e)].filter(Boolean).join(' · '))}</div></div><div class="kc">${r0(itemTotals(e).kcal)}</div></button>`).join('')}
-      ${copy}<button class="addrow" data-act="add" data-meal="${m}">+ Add food</button></div>`;
+      ${copy}<div class="row" style="justify-content:space-between"><button class="addrow" style="width:auto" data-act="add" data-meal="${m}">+ Add food</button><button class="addrow" style="width:auto;color:var(--muted);font-weight:500" data-act="copy-from" data-meal="${m}">Copy a past meal</button></div></div>`;
   }).join('');
   const copyDay = !S.entries.length && prev.length ? `<button class="btn ghost block" data-act="copy-prev" data-meal="" style="margin:-2px 0 12px">Copy all of ${dayLabel(addDays(S.date, -1)).toLowerCase()} (${prev.length} items · ${r0(sum(prev).kcal)} kcal)</button>` : '';
   return `<div class="datebar"><button data-act="day" data-d="-1" aria-label="Previous day">‹</button><button class="lbl" data-act="day" data-d="0">${esc(dayLabel(S.date))}</button><button data-act="day" data-d="1" aria-label="Next day">›</button></div>${summary}${copyDay}${meals}`;
@@ -497,14 +503,17 @@ function viewFoods(){
     <div class="card list" id="foodlist">${foodListHTML(list)}</div>`;
 }
 function foodListHTML(list){
-  return list.length ? list.map((f, i) => `<button class="item" data-act="edit-lib" data-i="${i}"><div><div class="nm">${esc(f.name)}${f.kind === 'meal' ? '<span class="tag">meal</span>' : ''}</div><div class="sub">${esc([f.brand, f.units[0] && f.units[0].label].filter(Boolean).join(' · '))}</div></div><div class="kc">${f.units[0] ? r0(f.units[0].kcal) : ''}</div></button>`).join('') : '<p class="empty">Nothing saved yet. Foods you create, or save from search, show up here.</p>';
+  return list.length ? list.map((f, i) => `<button class="item" data-act="edit-lib" data-i="${i}"><div><div class="nm">${esc(f.name)}${f.kind === 'meal' ? '<span class="tag">meal</span>' : ''}</div><div class="sub">${esc([f.brand, f.units[0] && niceLabel(f.units[0].label)].filter(Boolean).join(' · '))}</div></div><div class="kc">${f.units[0] ? r0(f.units[0].kcal) : ''}</div></button>`).join('') : '<p class="empty">Nothing saved yet. Foods you create, or save from search, show up here.</p>';
 }
 
 function viewSettings(){
   const p = S.profile, t = calcTarget(p, S.weights);
   const ft = p.heightIn ? Math.floor(p.heightIn / 12) : '', inch = p.heightIn ? r1(p.heightIn % 12) : '';
   const opt = (arr, v) => arr.map(([val, l]) => `<option value="${val}" ${String(v) === String(val) ? 'selected' : ''}>${l}</option>`).join('');
-  let calc = '<p class="small muted">Fill in the fields above and log a weigh-in to calculate your goal.</p>';
+  const aboutDone = p.sex && p.birthYear && p.heightIn;
+  let calc = aboutDone && !S.weights.length
+    ? '<p class="small muted">Log a weigh-in to calculate your daily calorie goal.</p><button type="button" class="btn ghost" data-act="tab" data-tab="weight">Log your first weight</button>'
+    : '<p class="small muted">Fill in About you (sex, birth year, height) to calculate your daily calorie goal.</p>';
   if (t.auto || t.override){
     calc = `<div class="small" style="margin-top:10px">${t.bmr ? `<div class="row" style="justify-content:space-between"><span class="muted">Resting burn (BMR)</span><b>${r0(t.bmr)}</b></div><div class="row" style="justify-content:space-between"><span class="muted">Daily burn with activity</span><b>${r0(t.tdee)}</b></div>` : ''}
       <div class="row" style="justify-content:space-between;font-size:16px;margin-top:6px"><span>Daily calorie goal</span><b>${r0(t.target)}</b></div>
@@ -647,9 +656,10 @@ function renderPortion(){
   return `${head(P.mode === 'edit' ? 'Edit entry' : 'Amount', P.back ? '‹ Back' : 'Cancel', P.back ? 'portion-back' : 'close-sheet')}
     <div class="card"><div class="row" style="align-items:flex-start"><div class="grow"><div class="nm" style="font-weight:650;font-size:18px">${esc(f.name)}</div><div class="small muted">${esc([f.brand, f.src].filter(Boolean).join(' · '))}</div></div>${f.src !== 'Quick add' ? `<button class="star ${isFav(f) ? 'on' : ''}" data-act="fav" aria-label="Favorite">${isFav(f) ? '★' : '☆'}</button>` : ''}</div>
       <div class="row" style="margin-top:6px"><div style="width:110px"><label>Amount</label><input data-in="qty" type="number" inputmode="decimal" step="any" value="${P.qty}"></div>
-      <div class="grow"><label>Unit</label><select data-in="unit">${f.units.map((u, i) => `<option value="${i}" ${i === P.unit ? 'selected' : ''}>${esc(u.label)}</option>`).join('')}</select></div></div>
+      <div class="grow"><label>Unit</label><select data-in="unit">${f.units.map((u, i) => `<option value="${i}" ${i === P.unit ? 'selected' : ''}>${esc(niceLabel(u.label))}</option>`).join('')}</select></div></div>
       ${P.mode !== 'pick' ? `<label>Meal</label><select data-in="meal">${MEALS.map(m => `<option ${m === P.meal ? 'selected' : ''}>${m}</option>`).join('')}</select>` : ''}
-      ${fromApi && P.mode !== 'edit' ? `<label class="chk"><input type="checkbox" data-in="savelib" ${P.saveLib ? 'checked' : ''}> Save to My Foods</label>` : ''}
+      ${fromApi && P.mode !== 'edit' ? `<label class="chk"><input type="checkbox" data-in="savelib" ${P.saveLib ? 'checked' : ''}> Save to My Foods (shared with household)</label>` : ''}
+      ${f.src !== 'Quick add' ? `<p class="small muted" style="margin:10px 0 0">☆ Favorite = your personal shortcut with this exact portion, for one-tap adding. My Foods = saved foods and recipes you both can use.</p>` : ''}
     </div>
     <div class="tot" id="ptot">${portionTotalsHTML()}</div>
     <button class="btn block" data-act="portion-ok" style="margin-top:16px">${okLabel}</button>
@@ -701,7 +711,7 @@ function openFoodForm(o){
       <div class="grid2"><div><label>Serving size</label><input name="label" value="${esc(s.label || '')}" placeholder="1 cup" required></div><div><label>Grams per serving (optional)</label><input name="grams" type="number" inputmode="decimal" value="${s.grams || ''}"></div></div>
       <label>Calories per serving</label><input name="kcal" type="number" inputmode="decimal" step="any" value="${s.kcal ?? ''}" required>
       <div class="grid3"><div><label>Protein g</label><input name="p" type="number" inputmode="decimal" step="any" value="${s.p ?? ''}"></div><div><label>Carbs g</label><input name="c" type="number" inputmode="decimal" step="any" value="${s.c ?? ''}"></div><div><label>Fat g</label><input name="f" type="number" inputmode="decimal" step="any" value="${s.f ?? ''}"></div></div>
-      <label>Barcode (optional)</label><input name="code" inputmode="numeric" value="${esc(o.code || f.code || '')}">
+      <label>Barcode (optional)</label><div class="row"><input class="grow" name="code" inputmode="numeric" value="${esc(o.code || f.code || '')}"><button type="button" class="btn ghost" data-act="ff-scan">Scan</button></div>
       <button class="btn block">Save food</button>
       ${f.id ? '<button type="button" class="btn danger block" data-act="ff-del">Delete food</button>' : ''}
     </form>`);
@@ -728,8 +738,12 @@ function renderBuilder(){
 
 /* ---- Barcode scanning ---- */
 async function stopScan(){ const s = S.scanner; S.scanner = null; if (s){ try { await s.stop(); } catch {} try { s.clear(); } catch {} } }
-async function openScan(){
-  openSheet(() => `${head('Scan barcode', '‹ Back', 'back-add')}<div id="reader"></div><p class="small muted center" id="scanmsg">Point the camera at the barcode.</p>`);
+// opts.onCode(code) handles the result; opts.back returns to the previous screen.
+let SCAN = null;
+async function openScan(opts){
+  SCAN = opts || {onCode:handleCode, back:backToAdd};
+  openSheet(() => `${head('Scan barcode', '‹ Back', 'scan-back')}<div id="reader"></div><p class="small muted center" id="scanmsg">Point the camera at the barcode and hold steady.</p>
+    <form class="card" data-form="manualcode" style="margin-top:12px"><label>Or type the number under the barcode</label><div class="row"><input class="grow" name="code" inputmode="numeric" autocomplete="off" placeholder="e.g. 016000275287"><button class="btn">Use</button></div></form>`);
   try {
     if (!window.Html5Qrcode) await loadScript('https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js');
     const FM = window.Html5QrcodeSupportedFormats;
@@ -737,7 +751,7 @@ async function openScan(){
     S.scanner = sc;
     let done = false;
     await sc.start({facingMode:'environment'}, {fps:10, qrbox:(w, h) => ({width:Math.floor(Math.min(w * 0.85, 320)), height:Math.floor(Math.min(h * 0.45, 160))})},
-      text => { if (done || !validCode(text)) return; if (S.lastRead !== text){ S.lastRead = text; return; } done = true; S.lastRead = null; if (navigator.vibrate) navigator.vibrate(60); stopScan().then(() => handleCode(text)); }, () => {});
+      text => { if (done || !validCode(text)) return; if (S.lastRead !== text){ S.lastRead = text; return; } done = true; S.lastRead = null; if (navigator.vibrate) navigator.vibrate(60); stopScan().then(() => SCAN.onCode(text)); }, () => {});
   } catch(e){
     const m = $('#scanmsg'); if (m) m.textContent = 'Camera unavailable. Allow camera access for this site, then try again. (' + (e.message || e) + ')';
   }
@@ -787,6 +801,23 @@ async function handleCode(code){
   if (error === 'network'){ openSheet(() => `${head('Lookup failed', '‹ Back', 'back-add')}<div class="card"><p>Couldn't reach the food databases to look up barcode <b>${esc(code)}</b>.</p><p class="small muted">Check your signal and try scanning again.</p><button class="btn block" data-act="scan">Scan again</button></div>`); return; }
   openSheet(() => `${head('Not found', '‹ Back', 'back-add')}<div class="card"><p>Barcode <b>${esc(code)}</b> isn't in the database yet.</p><p class="small muted">Check that this number matches the one printed under the barcode. If it does, create the food once from the nutrition label. After that, scanning it finds it for both of you.</p><button class="btn block" data-act="new-food" data-code="${esc(code)}">Create this food</button></div>`);
 }
+const loadDay = date => new Promise(res => { let u = null, done = false; u = be().watchDay(date, e => { if (done) return; done = true; res(e); setTimeout(() => u && u(), 0); }); });
+async function openCopyFrom(meal){
+  const target = S.date;
+  let groups = null;
+  const view = () => `${head('Copy into ' + meal)}
+    <p class="small muted">Pick a meal from the last week. It's added to ${esc(meal)} ${target === today() ? 'today' : target === addDays(today(), -1) ? 'yesterday' : 'on ' + esc(dayLabel(target))}, and you can undo it.</p>
+    ${groups === null ? '<p class="empty">Loading…</p>' : groups.length ? `<div class="card list">${groups.map((g, i) =>
+      `<button class="item" data-act="copy-group" data-i="${i}"><div><div class="nm">${esc(dayLabel(g.date))} · ${esc(g.meal)}</div><div class="sub">${esc(g.items.map(e => e.name).join(', '))}</div></div><div class="kc">${r0(sum(g.items).kcal)}</div></button>`).join('')}</div>` : '<p class="empty">No meals logged in the last week yet.</p>'}`;
+  openSheet(view);
+  const days = [];
+  for (let i = 1; i <= 7; i++) days.push(addDays(target, -i));
+  const results = await Promise.all(days.map(d => loadDay(d).then(e => ({date:d, e}))));
+  groups = [];
+  for (const {date, e} of results) for (const m of MEALS){ const items = e.filter(x => x.meal === m); if (items.length) groups.push({date, meal:m, items}); }
+  S.copyGroups = groups; S.copyTarget = {meal, date:target};
+  if (SHEET === view) renderSheet();
+}
 function backToAdd(){ SHEET = renderAdd; renderSheet(); }
 
 /* ================= Actions ================= */
@@ -799,6 +830,14 @@ const ACT = {
   'add-tab'(el){ A.tab = el.dataset.tab; renderSheet(); },
   'close-sheet'(){ closeSheet(); },
   'back-add'(){ stopScan().then(backToAdd); },
+  'scan-back'(){ stopScan().then(() => (SCAN && SCAN.back ? SCAN.back() : backToAdd())); },
+  'ff-scan'(){
+    const form = $('form[data-form=food]'); const v = k => form[k].value.trim();
+    const draft = {...(FF.food || {}), name:v('name'), brand:v('brand'), code:v('code'),
+      serving:{label:v('label'), grams:v('grams'), kcal:v('kcal'), p:v('p'), c:v('c'), f:v('f')}};
+    const ff = FF;
+    openScan({onCode:code => openFoodForm({...ff, food:draft, code}), back:() => openFoodForm({...ff, food:draft, code:draft.code})});
+  },
   'portion-back'(){ P.back ? P.back() : closeSheet(); },
   pick(el){
     const f = A.shown[+el.dataset.i]; if (!f) return;
@@ -823,6 +862,14 @@ const ACT = {
     toast(`Deleted ${gone ? gone.name : 'entry'}`, () => { if (S.date !== date) return; const list = S.entries.slice(); list.splice(Math.min(idx, list.length), 0, gone); be().setDay(date, list); });
   },
   fav(){ toggleFav(); },
+  'copy-from'(el){ openCopyFrom(el.dataset.meal); },
+  'copy-group'(el){
+    const g = S.copyGroups[+el.dataset.i], {meal, date} = S.copyTarget; if (!g || S.date !== date) return;
+    const before = S.entries.slice();
+    const items = g.items.map(e => ({...e, id:uid(), meal}));
+    be().setDay(date, [...S.entries, ...items]); closeSheet();
+    toast(`Copied ${items.length} item${items.length > 1 ? 's' : ''} to ${meal}`, () => { if (S.date === date) be().setDay(date, before); });
+  },
   'quick-log'(el){
     const f = A.shown[+el.dataset.i]; if (!f) return;
     const item = {name:f.name, brand:f.brand || '', src:f.src || '', code:f.code || '', units:f.units, unit:f.unit || 0, qty:f.qty || 1};
@@ -903,6 +950,11 @@ const FORMS = {
     catch(e){ renderAuth(authMsg(e)); $('[name=email]').value = email; }
   },
   search(form){ runSearch(form.q.value); },
+  manualcode(form){
+    const code = form.code.value.replace(/\D/g, '');
+    if (!validCode(code)){ toast('That number doesn\'t look like a complete barcode. Check the digits.'); return; }
+    stopScan().then(() => SCAN.onCode(code));
+  },
   weight(form){
     const lb = n0(form.lb.value), date = form.date.value || today();
     if (!(lb > 50 && lb < 900)){ toast('Enter a weight in pounds.'); return; }
