@@ -670,10 +670,17 @@ async function openScan(){
     S.scanner = sc;
     let done = false;
     await sc.start({facingMode:'environment'}, {fps:10, qrbox:(w, h) => ({width:Math.floor(Math.min(w * 0.85, 320)), height:Math.floor(Math.min(h * 0.45, 160))})},
-      text => { if (done) return; done = true; if (navigator.vibrate) navigator.vibrate(60); stopScan().then(() => handleCode(text)); }, () => {});
+      text => { if (done || !validCode(text)) return; if (S.lastRead !== text){ S.lastRead = text; return; } done = true; S.lastRead = null; if (navigator.vibrate) navigator.vibrate(60); stopScan().then(() => handleCode(text)); }, () => {});
   } catch(e){
     const m = $('#scanmsg'); if (m) m.textContent = 'Camera unavailable. Allow camera access for this site, then try again. (' + (e.message || e) + ')';
   }
+}
+// UPC/EAN check digit: rejects partial or misread scans.
+function validCode(c){
+  if (!/^(\d{8}|\d{12}|\d{13}|\d{14})$/.test(c)) return false;
+  const d = c.split('').map(Number), check = d.pop();
+  const s = d.reverse().reduce((a, x, i) => a + x * (i % 2 === 0 ? 3 : 1), 0);
+  return (10 - s % 10) % 10 === check;
 }
 async function lookupBarcode(code){
   const norm = c => String(c).replace(/^0+/, '');
@@ -891,7 +898,7 @@ async function boot(){
   });
 }
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-window.__plate = {S, lookupBarcode, offToFood, fdcToFood, calcTarget, foodUnits, sum, movingAvg, mealToFood};
+window.__plate = {S, validCode, lookupBarcode, offToFood, fdcToFood, calcTarget, foodUnits, sum, movingAvg, mealToFood};
 boot();
 </script>
 </body>
