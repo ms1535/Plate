@@ -11,5 +11,5 @@ window.PLATE_CONFIG = {
     appId: "1:69668517067:web:de8191759f7c18abd8574e"
   },
   // Free key from https://api.data.gov/signup/ (DEMO_KEY allows ~30 searches/hour).
-  usdaApiKey: "DEMO_KEY"
+  usdaApiKey: "Ph1PtYmtmTbqERfXPpgji4LavR1hCZ5cp1piLmFd"
 };
