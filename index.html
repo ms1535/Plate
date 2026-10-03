@@ -678,24 +678,40 @@ async function openScan(){
 async function lookupBarcode(code){
   const norm = c => String(c).replace(/^0+/, '');
   const local = S.lib.foods.find(f => f.code && norm(f.code) === norm(code));
-  if (local) return {...local, units:foodUnits(local)};
+  if (local) return {food:{...local, units:foodUnits(local)}};
+  let netErr = 0, tried = 0;
+  // 1) Open Food Facts
   const tries = [code]; if (code.length === 12) tries.push('0' + code); if (code.length === 13 && code[0] === '0') tries.push(code.slice(1));
   for (const c of tries){
+    tried++;
     try {
       const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${c}.json?fields=code,product_name,generic_name,brands,serving_size,serving_quantity,nutriments`);
-      if (!r.ok) continue;
+      if (r.status === 404) continue;
+      if (!r.ok){ netErr++; continue; }
       const j = await r.json();
-      if (j.status === 1 && j.product){ const f = offToFood({...j.product, code:c}); if (f) return f; }
-    } catch {}
+      if (j.status === 1 && j.product){ const f = offToFood({...j.product, code:c}); if (f) return {food:f}; }
+    } catch { netErr++; }
   }
-  return null;
+  // 2) USDA branded foods (strong US coverage)
+  tried++;
+  try {
+    const url = `https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${encodeURIComponent(USDA_KEY)}&query=${encodeURIComponent(norm(code))}&dataType=Branded&pageSize=10`;
+    const r = await fetch(url);
+    if (r.ok){
+      const j = await r.json();
+      const hit = (j.foods || []).find(f => f.gtinUpc && norm(f.gtinUpc) === norm(code));
+      if (hit){ const f = fdcToFood(hit); if (f) return {food:{...f, code}}; }
+    } else netErr++;
+  } catch { netErr++; }
+  return {food:null, error: netErr >= tried ? 'network' : null};
 }
 async function handleCode(code){
   openSheet(() => `${head('Looking up', '‹ Back', 'back-add')}<p class="empty center">Looking up barcode ${esc(code)}…</p>`);
-  const f = await lookupBarcode(code);
+  const {food:f, error} = await lookupBarcode(code);
   if (!A) return;
   if (f){ openPortion({food:f, meal:A.meal, mode:A.mode, back:backToAdd}); return; }
-  openSheet(() => `${head('Not found', '‹ Back', 'back-add')}<div class="card"><p>Barcode <b>${esc(code)}</b> isn't in the database yet.</p><p class="small muted">Create it once from the nutrition label. After that, scanning it will find it for both of you.</p><button class="btn block" data-act="new-food" data-code="${esc(code)}">Create this food</button></div>`);
+  if (error === 'network'){ openSheet(() => `${head('Lookup failed', '‹ Back', 'back-add')}<div class="card"><p>Couldn't reach the food databases to look up barcode <b>${esc(code)}</b>.</p><p class="small muted">Check your signal and try scanning again.</p><button class="btn block" data-act="scan">Scan again</button></div>`); return; }
+  openSheet(() => `${head('Not found', '‹ Back', 'back-add')}<div class="card"><p>Barcode <b>${esc(code)}</b> isn't in the database yet.</p><p class="small muted">Check that this number matches the one printed under the barcode. If it does, create the food once from the nutrition label. After that, scanning it finds it for both of you.</p><button class="btn block" data-act="new-food" data-code="${esc(code)}">Create this food</button></div>`);
 }
 function backToAdd(){ SHEET = renderAdd; renderSheet(); }
 
@@ -875,7 +891,7 @@ async function boot(){
   });
 }
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-window.__plate = {S, offToFood, fdcToFood, calcTarget, foodUnits, sum, movingAvg, mealToFood};
+window.__plate = {S, lookupBarcode, offToFood, fdcToFood, calcTarget, foodUnits, sum, movingAvg, mealToFood};
 boot();
 </script>
 </body>
